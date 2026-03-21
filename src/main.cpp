@@ -11,7 +11,18 @@
 
 CRGB leds[NUM_LEDS];
 
-// ── 5×7 ASCII font (printable chars 0x20–0x7E, each char = 5 columns of 7 bits)
+// ── Button ────────────────────────────────────────────────────────────────────
+#define BUTTON_PIN 2
+
+volatile bool     modeChanged = false;
+volatile uint8_t  currentMode = 0;   // 0 = scroll text, 1 = plasma
+
+void myISR() {
+    modeChanged = true;
+    currentMode = (currentMode + 1) % 2;
+}
+
+// ── 5×7 ASCII font (printable chars 0x20–0x7A, each char = 5 columns of 7 bits)
 // Bit 0 = top row, bit 6 = bottom row
 static const uint8_t font5x7[][5] PROGMEM = {
     { 0x00,0x00,0x00,0x00,0x00 }, // ' '
@@ -107,14 +118,15 @@ static const uint8_t font5x7[][5] PROGMEM = {
     { 0x44,0x64,0x54,0x4C,0x44 }, // 'z'
 };
 
-// ── Pixel mapping (original working function) ─────────────────────────────────
+// ── Pixel mapping ─────────────────────────────────────────────────────────────
 uint16_t translatePixel(uint8_t x, uint8_t y) {
     bool     ledDirection    = x % 2;
     uint16_t translatedPixel = ledDirection ? (8 * x) + y : (8 * x) + (7 - y);
     return 479 - translatedPixel;
 }
 
-// ── Draw a single character, each column gets a hue based on its screen X ────
+// ── Mode 0: Scrolling rainbow text ───────────────────────────────────────────
+
 void drawChar(int16_t xPos, char c, uint8_t hueOffset) {
     if (c < 0x20 || c > 0x7A) return;
     uint8_t charIndex = c - 0x20;
@@ -122,7 +134,6 @@ void drawChar(int16_t xPos, char c, uint8_t hueOffset) {
         int16_t screenX = xPos + col;
         if (screenX < 0 || screenX >= MATRIX_W) continue;
         uint8_t colBits = pgm_read_byte(&font5x7[charIndex][col]);
-        // hue advances by 4 per column across the display
         CRGB color = CHSV((uint8_t)(hueOffset + screenX * 4), 255, 255);
         for (uint8_t row = 0; row < 7; row++) {
             if (colBits & (1 << row)) {
@@ -132,21 +143,61 @@ void drawChar(int16_t xPos, char c, uint8_t hueOffset) {
     }
 }
 
-// ── Draw a full string starting at xPos ───────────────────────────────────────
 void drawString(int16_t xPos, const char* str, uint8_t hueOffset) {
     FastLED.clear();
-    const char* p = str;
     int16_t cx = xPos;
-    while (*p) {
-        drawChar(cx, *p, hueOffset);
-        cx += 6;   // 5px char + 1px spacing
-        p++;
+    while (*str) {
+        drawChar(cx, *str, hueOffset);
+        cx += 6;
+        str++;
     }
     FastLED.show();
 }
 
+// ── Mode 1: Plasma / flowing color blobs ─────────────────────────────────────
+// X axis is mapped onto a circle using sin/cos so column 0 and column 59
+// are neighbours in noise-space — the effect wraps seamlessly.
+// Time is kept as uint32_t and passed directly (no truncation) to avoid jumps.
+
+// Integer sin/cos approximation: input 0..255 = 0..2π, output -128..127
+static int8_t isin8(uint8_t theta) {
+    // Use FastLED's sin8 (0..255 output) and shift to signed
+    return (int8_t)(sin8(theta) - 128);
+}
+static int8_t icos8(uint8_t theta) {
+    return (int8_t)(cos8(theta) - 128);
+}
+
+void runPlasma() {
+    static uint32_t t = 0;
+
+    for (uint8_t x = 0; x < MATRIX_W; x++) {
+        // Map x to a point on a circle so x=0 and x=59 are adjacent
+        uint8_t angle = (uint8_t)((uint16_t)x * 256 / MATRIX_W);  // 0..255 around circle
+        int16_t cx = (int16_t)icos8(angle) * 3 + 400;  // circle radius * 3, offset into noise space
+        int16_t cy = (int16_t)isin8(angle) * 3 + 400;
+
+        for (uint8_t y = 0; y < MATRIX_H; y++) {
+            uint16_t ny = y * 30;
+
+            // Two noise layers — t kept as uint32_t, masked to 16-bit per layer
+            // using different bits so they advance at different rates
+            uint8_t n1 = inoise8(cx,          cy + ny, (t >> 6) & 0xFFFF);
+            uint8_t n2 = inoise8(cx + 200,    cy + ny, (t >> 5) & 0xFFFF);
+
+            uint8_t hue = n1 / 2 + n2 / 2;
+            leds[translatePixel(x, y)] = CHSV(hue, 255, 255);
+        }
+    }
+    FastLED.show();
+    t += 100;  // overall speed — lower = slower
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), myISR, FALLING);
+
     FastLED.addLeds<WS2811, LED_PIN, GRB>(leds, NUM_LEDS)
            .setCorrection(TypicalLEDStrip);
     FastLED.setBrightness(30);
@@ -156,13 +207,32 @@ void setup() {
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
-    static const char    text[]     = "NERDRETREAT";
-    static const int16_t textW      = strlen(text) * 6;
-    static uint8_t       hueOffset  = 0;
+    if (currentMode == 0) {
+        // ── Scroll text ───────────────────────────────────────────────────────
+        static const char    text[]    = "HELLO";
+        static const int16_t textW     = strlen(text) * 6;
+        static uint8_t       hueOffset = 0;
+        static int16_t       x         = MATRIX_W;
 
-    for (int16_t x = MATRIX_W; x > -textW; x--) {
+        if (modeChanged) {
+            modeChanged = false;
+            x = MATRIX_W;   // reset scroll position on mode switch
+            return;
+        }
+
         drawString(x, text, hueOffset);
-        hueOffset += 2;   // shift rainbow forward each frame
-        delay(30);
+        hueOffset += 2;
+        x--;
+        if (x <= -textW) x = MATRIX_W;
+        delay(40);
+
+    } else {
+        // ── Plasma ────────────────────────────────────────────────────────────
+        if (modeChanged) {
+            modeChanged = false;
+            FastLED.clear();
+        }
+        runPlasma();
+        delay(16);   // ~60 fps
     }
 }
