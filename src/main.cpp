@@ -1,111 +1,168 @@
 #include <Arduino.h>
-#include <FastLED.h>  // Use Version 3.1.3
+#include <FastLED.h>
 
-// ── LEDs ─────────────────────────────────────────────────────────────────────
+// ── LEDs ──────────────────────────────────────────────────────────────────────
 #define LED_PIN     6
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
 #define NUM_LEDS    480
+#define MATRIX_W    60
+#define MATRIX_H     8
 
-CRGB             leds[NUM_LEDS];
-CRGBPalette16    currentPalette;
-TBlendType       currentBlending;
-uint8_t          brightness;
+CRGB leds[NUM_LEDS];
 
-// ── IO ────────────────────────────────────────────────────────────────────────
-#define POT_PIN    4
-#define BUTTON_PIN 2
+// ── 5×7 ASCII font (printable chars 0x20–0x7E, each char = 5 columns of 7 bits)
+// Bit 0 = top row, bit 6 = bottom row
+static const uint8_t font5x7[][5] PROGMEM = {
+    { 0x00,0x00,0x00,0x00,0x00 }, // ' '
+    { 0x00,0x00,0x5F,0x00,0x00 }, // '!'
+    { 0x00,0x07,0x00,0x07,0x00 }, // '"'
+    { 0x14,0x7F,0x14,0x7F,0x14 }, // '#'
+    { 0x24,0x2A,0x7F,0x2A,0x12 }, // '$'
+    { 0x23,0x13,0x08,0x64,0x62 }, // '%'
+    { 0x36,0x49,0x55,0x22,0x50 }, // '&'
+    { 0x00,0x05,0x03,0x00,0x00 }, // '''
+    { 0x00,0x1C,0x22,0x41,0x00 }, // '('
+    { 0x00,0x41,0x22,0x1C,0x00 }, // ')'
+    { 0x08,0x2A,0x1C,0x2A,0x08 }, // '*'
+    { 0x08,0x08,0x3E,0x08,0x08 }, // '+'
+    { 0x00,0x50,0x30,0x00,0x00 }, // ','
+    { 0x08,0x08,0x08,0x08,0x08 }, // '-'
+    { 0x00,0x60,0x60,0x00,0x00 }, // '.'
+    { 0x20,0x10,0x08,0x04,0x02 }, // '/'
+    { 0x3E,0x51,0x49,0x45,0x3E }, // '0'
+    { 0x00,0x42,0x7F,0x40,0x00 }, // '1'
+    { 0x42,0x61,0x51,0x49,0x46 }, // '2'
+    { 0x21,0x41,0x45,0x4B,0x31 }, // '3'
+    { 0x18,0x14,0x12,0x7F,0x10 }, // '4'
+    { 0x27,0x45,0x45,0x45,0x39 }, // '5'
+    { 0x3C,0x4A,0x49,0x49,0x30 }, // '6'
+    { 0x01,0x71,0x09,0x05,0x03 }, // '7'
+    { 0x36,0x49,0x49,0x49,0x36 }, // '8'
+    { 0x06,0x49,0x49,0x29,0x1E }, // '9'
+    { 0x00,0x36,0x36,0x00,0x00 }, // ':'
+    { 0x00,0x56,0x36,0x00,0x00 }, // ';'
+    { 0x00,0x08,0x14,0x22,0x41 }, // '<'
+    { 0x14,0x14,0x14,0x14,0x14 }, // '='
+    { 0x41,0x22,0x14,0x08,0x00 }, // '>'
+    { 0x02,0x01,0x51,0x09,0x06 }, // '?'
+    { 0x32,0x49,0x79,0x41,0x3E }, // '@'
+    { 0x7E,0x11,0x11,0x11,0x7E }, // 'A'
+    { 0x7F,0x49,0x49,0x49,0x36 }, // 'B'
+    { 0x3E,0x41,0x41,0x41,0x22 }, // 'C'
+    { 0x7F,0x41,0x41,0x22,0x1C }, // 'D'
+    { 0x7F,0x49,0x49,0x49,0x41 }, // 'E'
+    { 0x7F,0x09,0x09,0x09,0x01 }, // 'F'
+    { 0x3E,0x41,0x49,0x49,0x7A }, // 'G'
+    { 0x7F,0x08,0x08,0x08,0x7F }, // 'H'
+    { 0x00,0x41,0x7F,0x41,0x00 }, // 'I'
+    { 0x20,0x40,0x41,0x3F,0x01 }, // 'J'
+    { 0x7F,0x08,0x14,0x22,0x41 }, // 'K'
+    { 0x7F,0x40,0x40,0x40,0x40 }, // 'L'
+    { 0x7F,0x02,0x04,0x02,0x7F }, // 'M'
+    { 0x7F,0x04,0x08,0x10,0x7F }, // 'N'
+    { 0x3E,0x41,0x41,0x41,0x3E }, // 'O'
+    { 0x7F,0x09,0x09,0x09,0x06 }, // 'P'
+    { 0x3E,0x41,0x51,0x21,0x5E }, // 'Q'
+    { 0x7F,0x09,0x19,0x29,0x46 }, // 'R'
+    { 0x46,0x49,0x49,0x49,0x31 }, // 'S'
+    { 0x01,0x01,0x7F,0x01,0x01 }, // 'T'
+    { 0x3F,0x40,0x40,0x40,0x3F }, // 'U'
+    { 0x1F,0x20,0x40,0x20,0x1F }, // 'V'
+    { 0x3F,0x40,0x38,0x40,0x3F }, // 'W'
+    { 0x63,0x14,0x08,0x14,0x63 }, // 'X'
+    { 0x07,0x08,0x70,0x08,0x07 }, // 'Y'
+    { 0x61,0x51,0x49,0x45,0x43 }, // 'Z'
+    { 0x00,0x7F,0x41,0x41,0x00 }, // '['
+    { 0x02,0x04,0x08,0x10,0x20 }, // '\'
+    { 0x00,0x41,0x41,0x7F,0x00 }, // ']'
+    { 0x04,0x02,0x01,0x02,0x04 }, // '^'
+    { 0x40,0x40,0x40,0x40,0x40 }, // '_'
+    { 0x00,0x01,0x02,0x04,0x00 }, // '`'
+    { 0x20,0x54,0x54,0x54,0x78 }, // 'a'
+    { 0x7F,0x48,0x44,0x44,0x38 }, // 'b'
+    { 0x38,0x44,0x44,0x44,0x20 }, // 'c'
+    { 0x38,0x44,0x44,0x48,0x7F }, // 'd'
+    { 0x38,0x54,0x54,0x54,0x18 }, // 'e'
+    { 0x08,0x7E,0x09,0x01,0x02 }, // 'f'
+    { 0x08,0x54,0x54,0x54,0x3C }, // 'g'
+    { 0x7F,0x08,0x04,0x04,0x78 }, // 'h'
+    { 0x00,0x44,0x7D,0x40,0x00 }, // 'i'
+    { 0x20,0x40,0x44,0x3D,0x00 }, // 'j'
+    { 0x7F,0x10,0x28,0x44,0x00 }, // 'k'
+    { 0x00,0x41,0x7F,0x40,0x00 }, // 'l'
+    { 0x7C,0x04,0x18,0x04,0x78 }, // 'm'
+    { 0x7C,0x08,0x04,0x04,0x78 }, // 'n'
+    { 0x38,0x44,0x44,0x44,0x38 }, // 'o'
+    { 0x7C,0x14,0x14,0x14,0x08 }, // 'p'
+    { 0x08,0x14,0x14,0x18,0x7C }, // 'q'
+    { 0x7C,0x08,0x04,0x04,0x08 }, // 'r'
+    { 0x48,0x54,0x54,0x54,0x20 }, // 's'
+    { 0x04,0x3F,0x44,0x40,0x20 }, // 't'
+    { 0x3C,0x40,0x40,0x40,0x7C }, // 'u'
+    { 0x1C,0x20,0x40,0x20,0x1C }, // 'v'
+    { 0x3C,0x40,0x30,0x40,0x3C }, // 'w'
+    { 0x44,0x28,0x10,0x28,0x44 }, // 'x'
+    { 0x0C,0x50,0x50,0x50,0x3C }, // 'y'
+    { 0x44,0x64,0x54,0x4C,0x44 }, // 'z'
+};
 
-// ── Emergency party switch ────────────────────────────────────────────────────
-#define OLD_MODE false
-
-volatile bool ledState = true;
-
-// ── Data structures ───────────────────────────────────────────────────────────
-typedef struct images_old {
-    byte sweden[73] = {
-        1  , 32 , 64 , 96 , 128, 160, 192, 224, 0  ,
-        32 , 0  , 0  , 0  , 0  , 0  , 0  , 0  , 0  ,
-        64 , 0  , 0  , 0  , 0  , 0  , 0  , 0  , 0  ,
-        96 , 0  , 0  , 0  , 0  , 0  , 0  , 0  , 0  ,
-        224, 224, 224, 224, 224, 224, 224, 224, 224,
-        160, 0  , 0  , 0  , 160, 0  , 0  , 0  , 0  ,
-        192, 0  , 0  , 0  , 0  , 0  , 0  , 0  , 0  ,
-        224, 0  , 0  , 0  , 0  , 0  , 0  , 0  , 0  , 255
-    };
-} images_old;
-
-// ── Forward declarations ──────────────────────────────────────────────────────
-void displayLogo(byte image[]);
-void paintLogo(byte image[], uint8_t startColumn);
-void clearAllPixels();
-uint16_t translatePixel(uint8_t x, uint8_t y);
-void myISR();
-
-// ── Setup ─────────────────────────────────────────────────────────────────────
-void setup() {
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), myISR, FALLING);
-    pinMode(LED_BUILTIN, OUTPUT);
-
-    Serial.begin(9600);
-
-    FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS)
-           .setCorrection(TypicalLEDStrip);
-    FastLED.setBrightness(30);
-
-    currentPalette  = RainbowColors_p;
-    currentBlending = LINEARBLEND;
+// ── Pixel mapping (original working function) ─────────────────────────────────
+uint16_t translatePixel(uint8_t x, uint8_t y) {
+    bool     ledDirection    = x % 2;
+    uint16_t translatedPixel = ledDirection ? (8 * x) + y : (8 * x) + (7 - y);
+    return 479 - translatedPixel;
 }
 
-// ── Loop ──────────────────────────────────────────────────────────────────────
-void loop() {
-    // brightness = analogRead(POT_PIN) / 20;
-    // if (brightness < 10) brightness = 5;
-    images_old test;
-    displayLogo(test.sweden);
-}
-
-// ── Functions ─────────────────────────────────────────────────────────────────
-
-void displayLogo(byte image[]) {
-    for (uint8_t column = 0; column <= 60; column++) {
-        clearAllPixels();
-        paintLogo(image, column);
-        delay(100);
+// ── Draw a single character, each column gets a hue based on its screen X ────
+void drawChar(int16_t xPos, char c, uint8_t hueOffset) {
+    if (c < 0x20 || c > 0x7A) return;
+    uint8_t charIndex = c - 0x20;
+    for (uint8_t col = 0; col < 5; col++) {
+        int16_t screenX = xPos + col;
+        if (screenX < 0 || screenX >= MATRIX_W) continue;
+        uint8_t colBits = pgm_read_byte(&font5x7[charIndex][col]);
+        // hue advances by 4 per column across the display
+        CRGB color = CHSV((uint8_t)(hueOffset + screenX * 4), 255, 255);
+        for (uint8_t row = 0; row < 7; row++) {
+            if (colBits & (1 << row)) {
+                leds[translatePixel(screenX, row)] = color;
+            }
+        }
     }
 }
 
-void paintLogo(byte image[], uint8_t startColumn) {
-    uint16_t pixel = 0;
-    while (image[pixel] != 255) {
-        uint8_t x = (startColumn + (pixel % 9)) % 60;
-        uint8_t y = pixel / 8;
-
-        if (image[pixel] == 0) {
-            leds[translatePixel(x, y)] = ColorFromPalette(HeatColors_p, image[pixel], 0, currentBlending);
-        } else if (image[pixel] == 254) {
-            leds[translatePixel(x, y)] = ColorFromPalette(HeatColors_p, image[pixel], 255, currentBlending);
-        } else {
-            leds[translatePixel(x, y)] = ColorFromPalette(currentPalette, image[pixel], 255, currentBlending);
-        }
-        pixel++;
+// ── Draw a full string starting at xPos ───────────────────────────────────────
+void drawString(int16_t xPos, const char* str, uint8_t hueOffset) {
+    FastLED.clear();
+    const char* p = str;
+    int16_t cx = xPos;
+    while (*p) {
+        drawChar(cx, *p, hueOffset);
+        cx += 6;   // 5px char + 1px spacing
+        p++;
     }
     FastLED.show();
 }
 
-void clearAllPixels() {
-    for (uint16_t i = 0; i < NUM_LEDS; i++) {
-        leds[i] = ColorFromPalette(currentPalette, 0, 0, currentBlending);
+// ── Setup ─────────────────────────────────────────────────────────────────────
+void setup() {
+    FastLED.addLeds<WS2811, LED_PIN, GRB>(leds, NUM_LEDS)
+           .setCorrection(TypicalLEDStrip);
+    FastLED.setBrightness(30);
+    FastLED.clear();
+    FastLED.show();
+}
+
+// ── Loop ──────────────────────────────────────────────────────────────────────
+void loop() {
+    static const char    text[]     = "NERDRETREAT";
+    static const int16_t textW      = strlen(text) * 6;
+    static uint8_t       hueOffset  = 0;
+
+    for (int16_t x = MATRIX_W; x > -textW; x--) {
+        drawString(x, text, hueOffset);
+        hueOffset += 2;   // shift rainbow forward each frame
+        delay(30);
     }
-}
-
-uint16_t translatePixel(uint8_t x, uint8_t y) {
-    bool     ledDirection     = x % 2;
-    uint16_t translatedPixel  = ledDirection ? (8 * x) + y : (8 * x) + (7 - y);
-    return 479 - translatedPixel;
-}
-
-void myISR() {
-    ledState = !ledState;
 }
