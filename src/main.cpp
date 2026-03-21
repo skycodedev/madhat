@@ -78,7 +78,7 @@ void loop() {
             FastLED.clear();
         }
         effectFire();
-        delay(40);
+        delay(20);
 
     // ── Mode 3: GIF playback (disabled) ──────────────────────────────────────
     // } else if (currentMode == 3) {

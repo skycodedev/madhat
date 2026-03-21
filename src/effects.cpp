@@ -82,53 +82,178 @@ void effectPlasma() {
 }
 
 // ── Fireplace ────────────────────────────────────────────────────────────────
-// Classic DOOM-style fire simulation.
-// A heat buffer (0-255) is maintained per pixel.
-// Each frame:
-//   1. Bottom row is seeded with full heat (with small random dips for flicker).
-//   2. Each pixel cools slightly and its heat drifts upward from the row below.
-// Heat values are mapped: black -> red -> orange -> yellow -> white
+// DOOM-style fire, simulated on HALF the display width (30 cols) then
+// mirrored symmetrically to the other half so both visible sides of the
+// cylinder match. Seams at col 0 and col 30 blend naturally because the
+// diffusion kernel wraps within the half-buffer.
+// Halving the sim width saves 120 bytes, giving room for firePrev.
+//
+// RAM budget:
+//   leds[480]  = 1440 B
+//   fireHeat   =  120 B  (30*8 / 2, 4-bit packed)
+//   firePrev   =  120 B
+//   embers x3  =   12 B
+//   stack+misc = ~150 B
+//   Total      = 1842 B  (free: 206 B)
 
-static uint8_t fireHeat[MATRIX_W][MATRIX_H];
+#define FIRE_HALF   (MATRIX_W / 2)                    // 30 columns simulated
+#define FIRE_CELLS  (FIRE_HALF * MATRIX_H)             // 240 logical cells
+#define FIRE_BYTES  ((FIRE_CELLS + 1) / 2)             // 120 bytes each buffer
 
-static CRGB heatToColor(uint8_t heat) {
-    if (heat < 86) {
-        return CRGB(heat * 3, 0, 0);                          // black -> red
-    } else if (heat < 171) {
-        uint8_t t = heat - 86;
-        return CRGB(255, t * 3, 0);                           // red -> orange/yellow
-    } else {
-        uint8_t t = heat - 171;
-        return CRGB(255, 255, t * 3);                         // yellow -> white
+static uint8_t fireHeat[FIRE_BYTES];   // current frame  (30*8 half-display)
+static uint8_t firePrev[FIRE_BYTES];   // previous frame
+
+static inline uint8_t heatBufGet(const uint8_t* buf, uint8_t x, uint8_t y) {
+    uint16_t i = (uint16_t)x * MATRIX_H + y;
+    return (i & 1) ? (buf[i >> 1] & 0x0F) : (buf[i >> 1] >> 4);
+}
+static inline void heatBufSet(uint8_t* buf, uint8_t x, uint8_t y, uint8_t v) {
+    uint16_t i = (uint16_t)x * MATRIX_H + y;
+    if (i & 1) buf[i >> 1] = (buf[i >> 1] & 0xF0) | (v & 0x0F);
+    else        buf[i >> 1] = (buf[i >> 1] & 0x0F) | ((v & 0x0F) << 4);
+}
+static inline uint8_t fireGet(uint8_t x, uint8_t y)            { return heatBufGet(fireHeat, x, y); }
+static inline void    fireSet(uint8_t x, uint8_t y, uint8_t v) { heatBufSet(fireHeat, x, y, v); }
+
+// Mirror a half-display column (0..29) to its full-display column on each side.
+// The half-buffer is laid out as a straight strip (col 0=seam, col 29=centre).
+// Mirrored:  left side  col  29-x  maps to full col x
+//            right side col  30+x  maps to full col x  (x=0..29)
+static inline uint8_t mirrorX(uint8_t hx) {
+    // hx 0..29 — col 0 is the seam, col 29 is the centre of the visible face
+    return hx;  // used directly; rendering applies both sides below
+}
+
+// ── Colour palette ───────────────────────────────────────────────────────────
+static CRGB heatToColor(uint8_t heat4) {
+    if (heat4 == 0)  return CRGB(0, 0, 0);
+    if (heat4 <= 4)  return CRGB(heat4 * 28, 0, 0);              // black -> dark red
+    if (heat4 <= 9)  { uint8_t t = heat4-4; return CRGB(112+t*24, t*10, 0); } // dark red -> orange
+    if (heat4 <= 13) { uint8_t t = heat4-10; return CRGB(232+t*7, 50+t*40, 0); } // orange -> yellow
+    return CRGB(255, 210, 20);                                    // yellow-white tip
+}
+
+// ── Ember particles ───────────────────────────────────────────────────────────
+#define MAX_EMBERS 5
+struct Ember {
+    uint8_t  x;       // column (wraps)
+    int8_t   y;       // row, -1 = off screen (dead)
+    uint8_t  heat;    // 1-6, fades each step
+    uint8_t  ttl;     // frames until next move
+};
+static Ember embers[MAX_EMBERS];
+static bool  embersInit = false;
+
+static void spawnEmber() {
+    // Find a dead slot
+    for (uint8_t i = 0; i < MAX_EMBERS; i++) {
+        if (embers[i].y < 0) {
+            embers[i].x    = random8(FIRE_HALF);   // half-space, mirrored on render
+            embers[i].y    = MATRIX_H - 2;   // start just above bottom
+            embers[i].heat = random8(3, 7);
+            embers[i].ttl  = random8(1, 3);
+            return;
+        }
     }
 }
 
+static void updateEmbers() {
+    for (uint8_t i = 0; i < MAX_EMBERS; i++) {
+        if (embers[i].y < 0) continue;
+        if (--embers[i].ttl == 0) {
+            embers[i].y--;                              // drift upward
+            embers[i].x = (embers[i].x + random8(0,3) - 1 + FIRE_HALF) % FIRE_HALF;
+            embers[i].ttl  = random8(1, 3);
+            if (embers[i].y < 0)
+                embers[i].y = -1;                       // flew off the top — kill
+        }
+    }
+    // Randomly spawn new embers
+    if (random8(0, 8) == 0) spawnEmber();
+}
+
+// ── Fire tuning ────────────────────────────────────────────────────────────────
+// INTERP_STEPS : display frames between sim ticks. Higher = smoother & slower.
+// FIRE_COOL_LO  : minimum cooling subtracted per row per tick (heat units 0-15).
+// FIRE_COOL_HI  : maximum cooling (random between LO and HI each pixel).
+//                 Higher values = shorter, darker flame.
+//                 Recommended range: LO 1-3, HI 2-6.
+#define INTERP_STEPS  4
+#define FIRE_COOL_LO  1   // min cooling per pixel per tick
+#define FIRE_COOL_HI  2   // max cooling — lower = taller tongues
+#define FIRE_SEED_HOT 14  // max heat seeded at bottom (was 15 = always white)
+#define FIRE_SEED_HOT_CHANCE 2  // 1-in-N chance a column gets a hot spot (rest stay cold)
+
 void effectFire() {
-    // Seed bottom row with near-full heat, small random dips for flicker
-    for (uint8_t x = 0; x < MATRIX_W; x++) {
-        fireHeat[x][MATRIX_H - 1] = random8(200, 255);
+    static uint8_t interpStep = 0;
+    static bool    firstFrame = true;
+
+    if (!embersInit) {
+        for (uint8_t i = 0; i < MAX_EMBERS; i++) embers[i].y = -1;
+        embersInit = true;
     }
 
-    // Diffuse heat upward — average from the row below with horizontal spread,
-    // subtract a small random cooling amount per step
-    for (uint8_t x = 0; x < MATRIX_W; x++) {
-        for (uint8_t y = 0; y < MATRIX_H - 1; y++) {
-            uint8_t left  = fireHeat[(x + MATRIX_W - 1) % MATRIX_W][y + 1];
-            uint8_t mid   = fireHeat[x][y + 1];
-            uint8_t right = fireHeat[(x + 1) % MATRIX_W][y + 1];
-            uint16_t avg  = ((uint16_t)left + mid + right) / 3;
-            uint8_t cooling = random8(0, 3);
-            fireHeat[x][y] = (avg > cooling) ? avg - cooling : 0;
+    // ── Advance simulation (half-width) once per INTERP_STEPS calls ─────────
+    if (interpStep == 0 || firstFrame) {
+        memcpy(firePrev, fireHeat, FIRE_BYTES);
+
+        // Seed bottom row — random hot patches with frequent cold gaps
+        // so distinct flame tongues form rather than a solid white bar
+        for (uint8_t x = 0; x < FIRE_HALF; x++) {
+            if (random8(FIRE_SEED_HOT_CHANCE) == 0)
+                fireSet(x, MATRIX_H - 1, random8(8, FIRE_SEED_HOT + 1)); // hot spot
+            else
+                fireSet(x, MATRIX_H - 1, random8(1, 3));                  // cold base
         }
+        // Diffuse upward — wraps at x=0 and x=FIRE_HALF-1 (the two seam edges)
+        for (uint8_t x = 0; x < FIRE_HALF; x++) {
+            for (uint8_t y = 0; y < MATRIX_H - 1; y++) {
+                uint8_t left  = fireGet((x + FIRE_HALF - 1) % FIRE_HALF, y + 1);
+                uint8_t mid   = fireGet(x,                               y + 1);
+                uint8_t right = fireGet((x + 1)             % FIRE_HALF, y + 1);
+                uint8_t avg   = ((uint16_t)left + mid + right) / 3;
+                uint8_t cool  = random8(FIRE_COOL_LO, FIRE_COOL_HI + 1);
+                fireSet(x, y, (avg > cool) ? avg - cool : 0);
+            }
+        }
+        updateEmbers();
+        firstFrame = false;
     }
 
-    // Render heat buffer to LEDs
-    for (uint8_t x = 0; x < MATRIX_W; x++) {
+    // ── Interpolate and render ─────────────────────────────────────────────
+    uint8_t blend = (uint8_t)(((uint16_t)(interpStep + 1) * 256) / INTERP_STEPS);
+
+    for (uint8_t hx = 0; hx < FIRE_HALF; hx++) {
         for (uint8_t y = 0; y < MATRIX_H; y++) {
-            leds[translatePixel(x, y)] = heatToColor(fireHeat[x][y]);
+            uint8_t hBlend = lerp8by8(
+                heatBufGet(firePrev, hx, y),
+                fireGet(hx, y),
+                blend
+            );
+            CRGB col = heatToColor(hBlend);
+
+            // Left half:  hx=0 is the seam (col 0 & 59 meet here)
+            //             hx=29 is the centre of the visible face (col 29)
+            // Full col for left side  = FIRE_HALF - 1 - hx  (col 29..0)
+            // Full col for right side = FIRE_HALF + hx       (col 30..59)
+            leds[translatePixel(FIRE_HALF - 1 - hx, y)] = col;
+            leds[translatePixel(FIRE_HALF     + hx, y)] = col;
         }
     }
+
+    // Embers — mirror them too
+    for (uint8_t i = 0; i < MAX_EMBERS; i++) {
+        if (embers[i].y < 0 || embers[i].y >= MATRIX_H) continue;
+        // ember x is in half-space (0..FIRE_HALF-1)
+        uint8_t hx  = embers[i].x % FIRE_HALF;
+        uint8_t y   = embers[i].y;
+        CRGB    col = heatToColor(embers[i].heat);
+        leds[translatePixel(FIRE_HALF - 1 - hx, y)] = col;
+        leds[translatePixel(FIRE_HALF     + hx, y)] = col;
+    }
+
     FastLED.show();
+    interpStep = (interpStep + 1) % INTERP_STEPS;
 }
 
 // ── GIF image playback (disabled — uncomment to re-enable) ──────────────────
