@@ -1,15 +1,22 @@
 #pragma once
 #include <Arduino.h>
 
+// Call when switching modes — zeroes shared state union, preventing the
+// previous effect's data from corrupting the next one.
+// Pass the mode number you are switching TO.
+void resetEffect(uint8_t mode);
+
 // ── Mode 0: Scrolling rainbow text ───────────────────────────────────────────
-// Call once per frame. Pass resetScroll=true to restart from the beginning.
 void effectScrollText(const char* text, bool resetScroll = false);
 
 // ── Mode 1: Plasma / flowing color blobs ─────────────────────────────────────
 void effectPlasma();
 
-// ── Mode 3: Fireplace ───────────────────────────────────────────────────────
+// ── Mode 2: Fireplace ───────────────────────────────────────────────────────
 void effectFire();
+
+// ── Mode 3: Fireworks ──────────────────────────────────────────────────────
+void effectFireworks();
 
 // ── GIF image playback (disabled — uncomment to re-enable) ──────────────────
 // void effectImage(const uint32_t* frameData,
