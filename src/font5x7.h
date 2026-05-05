@@ -3,9 +3,9 @@
 
 // 5×7 ASCII font, printable chars 0x20 (' ') – 0x7A ('z')
 // Each entry is 5 column bytes. Bit 0 = top row, bit 6 = bottom row.
-// Stored in flash (PROGMEM) to save RAM.
+// Plain const — ESP32 has unified address space, no PROGMEM needed.
 
-static const uint8_t font5x7[][5] PROGMEM = {
+static const uint8_t font5x7[][5] = {
     { 0x00,0x00,0x00,0x00,0x00 }, // ' '
     { 0x00,0x00,0x5F,0x00,0x00 }, // '!'
     { 0x00,0x07,0x00,0x07,0x00 }, // '"'

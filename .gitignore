@@ -1,5 +1,12 @@
-.pio
-.vscode/.browse.c_cpp.db*
-.vscode/c_cpp_properties.json
-.vscode/launch.json
-.vscode/ipch
+# PlatformIO build output
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Auto-generated GIF pixel data (regenerated every build by scripts/convert_gifs.py)
+# The src/generated/ directory is tracked via .gitkeep; the generated files are not.
+src/generated/*.h
+src/generated/*.cpp
+
+# macOS metadata
+.DS_Store

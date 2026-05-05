@@ -1,27 +1,21 @@
 #pragma once
 #include <Arduino.h>
 
-// Call when switching modes — zeroes shared state union, preventing the
-// previous effect's data from corrupting the next one.
+// Call when switching modes — zeroes shared state union.
 // Pass the mode number you are switching TO.
 void resetEffect(uint8_t mode);
 
-// ── Mode 0: Scrolling rainbow text ───────────────────────────────────────────
+// Mode 0: Scrolling rainbow text
 void effectScrollText(const char* text, bool resetScroll = false);
 
-// ── Mode 1: Plasma / flowing color blobs ─────────────────────────────────────
+// Mode 1: Plasma / flowing color blobs
 void effectPlasma();
 
-// ── Mode 2: Fireplace ───────────────────────────────────────────────────────
+// Mode 2: Fireplace
 void effectFire();
 
-// ── Mode 3: Fireworks ──────────────────────────────────────────────────────
-void effectFireworks();
+// Mode 3: Graphic equalizer (requires INMP441 via I2S, see audio.h)
+void effectEqualizer();
 
-// ── GIF image playback (disabled — uncomment to re-enable) ──────────────────
-// void effectImage(const uint32_t* frameData,
-//                  uint8_t         nFrames,
-//                  uint8_t         imgW,
-//                  uint8_t         imgH,
-//                  uint16_t        delayMs,
-//                  bool            reset = false);
+// Mode 4: Fireworks
+void effectFireworks();
