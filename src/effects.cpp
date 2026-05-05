@@ -25,18 +25,21 @@ extern CRGB leds[];
 #define FIRE_W               MATRIX_W
 #define FIRE_H               MATRIX_H
 // Cooling values are already in final scale (applied directly as heat-units/step)
-#define FIRE_COOL_LO         3    // minimum cooling per cell per frame
-#define FIRE_COOL_HI         8    // maximum cooling per cell per frame
+#define FIRE_COOL_LO         20    // minimum cooling per cell per frame
+#define FIRE_COOL_HI         60    // maximum cooling per cell per frame
 #define FIRE_RISE            1    // rows sampled below when propagating heat upward
                                   // 1 = normal rise speed, 2-3 = faster/taller flame
-#define FIRE_RISE_EVERY      20    // propagate heat only 1-in-N frames
+#define FIRE_RISE_EVERY      5    // propagate heat only 1-in-N frames
                                   // 1 = every frame (fastest rise)
                                   // 3 = every 3rd frame
                                   // 5 = every 5th frame (slowest rise)
-#define FIRE_SEED_HOT        240  // peak heat value for a "hot" seed pixel
-#define FIRE_SEED_HOT_CHANCE 16    // 1-in-N chance of spawning a hot seed pixel
+#define FIRE_SEED_HOT        240  // heat value a fresh seed spawns at
+#define NUM_SEEDS            8    // exactly this many seeds active at all times
+#define SEED_COOL            2    // heat units a seed loses per frame
+#define SEED_MIN_HEAT        128  // heat below this → seed is spent and respawned
+                                  // 128 = bottom of yellow band in current linear gradient
 #define MAX_EMBERS           8
-#define EMBER_TTL_LO         8    // minimum frames between ember moves (6× slower than before)
+#define EMBER_TTL_LO         8    // minimum frames between ember moves
 #define EMBER_TTL_HI         40   // maximum frames between ember moves
 
 // ── Scroll constants ───────────────────────────────────────────────────────────
@@ -91,10 +94,16 @@ struct Ember {
     uint8_t ttl;
 };
 
+struct FireSeed {
+    uint8_t x;
+    uint8_t heat;
+};
+
 struct FireState {
-    uint8_t heat[FIRE_W * FIRE_H];
-    Ember   embers[MAX_EMBERS];
-    uint8_t riseCounter;   // counts up to FIRE_RISE_EVERY; propagation runs when it wraps
+    uint8_t  heat[FIRE_W * FIRE_H];
+    Ember    embers[MAX_EMBERS];
+    FireSeed seeds[NUM_SEEDS];
+    uint8_t  riseCounter;   // counts up to FIRE_RISE_EVERY; propagation runs when it wraps
 };
 
 // Renamed from FWState (conflict with enum) → FireworksState
@@ -135,6 +144,10 @@ void resetEffect(uint8_t mode) {
     memset(&gState, 0, sizeof(gState));
     if (mode == 2) {
         for (uint8_t i = 0; i < MAX_EMBERS; i++) gState.fire.embers[i].y = -1;
+        for (uint8_t i = 0; i < NUM_SEEDS;  i++) {
+            gState.fire.seeds[i].x    = random8(FIRE_W);
+            gState.fire.seeds[i].heat = FIRE_SEED_HOT;
+        }
     }
 }
 
@@ -217,37 +230,14 @@ void effectPlasma() {
 static inline uint8_t fireGet(uint8_t x, uint8_t y) { return gState.fire.heat[x * FIRE_H + y]; }
 static inline void    fireSet(uint8_t x, uint8_t y, uint8_t v) { gState.fire.heat[x * FIRE_H + y] = v; }
 
-// Maps a heat value (0-255) to a colour across 12 gradient bands.
-//
-//  Band  Range    Transition
-//   1    1– 21    black → very dark red
-//   2   22– 42    very dark red → dark red
-//   3   43– 63    dark red → red
-//   4   64– 84    red → red-orange
-//   5   85–105    red-orange → orange
-//   6  106–126    orange → deep orange
-//   7  127–147    deep orange → light orange
-//   8  148–168    light orange → yellow-orange
-//   9  169–189    yellow-orange → warm yellow
-//  10  190–210    warm yellow → yellow
-//  11  211–231    yellow → yellow-white
-//  12  232–255    yellow-white → white-hot
+// Maps a heat value (0-255) to a colour.
+// Gradient: black → dark red → orange → yellow-orange → white-hot
 static CRGB heatToColor(uint8_t h) {
-    if (h == 0) return CRGB(0, 0, 0);
-
-    // Each band is 21 heat-units wide; t is position within that band (0–20).
-    if (h < 22)  { uint8_t t = h - 1;   return CRGB(t * 5,          0,       0); }   // black → very dark red
-    if (h < 43)  { uint8_t t = h - 22;  return CRGB(105 + t * 5,    0,       0); }   // very dark red → dark red
-    if (h < 64)  { uint8_t t = h - 43;  return CRGB(210 + t,        0,       0); }   // dark red → red
-    if (h < 85)  { uint8_t t = h - 64;  return CRGB(230 + t / 5,    t * 3,   0); }   // red → red-orange
-    if (h < 106) { uint8_t t = h - 85;  return CRGB(234 + t / 10,   60 + t * 4, 0); } // red-orange → orange
-    if (h < 127) { uint8_t t = h - 106; return CRGB(236 + t / 10,   140 + t * 3, 0); } // orange → deep orange
-    if (h < 148) { uint8_t t = h - 127; return CRGB(238 + t / 10,   203 + t, 0); }   // deep orange → light orange
-    if (h < 169) { uint8_t t = h - 148; return CRGB(240 + t / 10,   223 + t / 4, 0); } // light orange → yellow-orange
-    if (h < 190) { uint8_t t = h - 169; return CRGB(242 + t / 10,   228 + t / 4, 0); } // yellow-orange → warm yellow
-    if (h < 211) { uint8_t t = h - 190; return CRGB(246 + t / 10,   233 + t / 4, 0); } // warm yellow → yellow
-    if (h < 232) { uint8_t t = h - 211; return CRGB(250 + t / 20,   238 + t / 4, t * 3); } // yellow → yellow-white
-    {              uint8_t t = h - 232; return CRGB(255,             243 + t / 5, 60 + t * 8); } // yellow-white → white-hot
+    if (h == 0)  return CRGB(0, 0, 0);
+    if (h < 64)  return CRGB(h * 4, 0, 0);                                      // black → red
+    if (h < 128) { uint8_t t = h - 64;  return CRGB(255, t * 4, 0); }           // red → orange
+    if (h < 192) { uint8_t t = h - 128; return CRGB(255, 255, t * 4); }         // orange → yellow-white
+    {              uint8_t t = h - 192; return CRGB(255, 255, 64 + t * 3); }    // yellow-white → white-hot
 }
 
 static void spawnEmber() {
@@ -282,12 +272,19 @@ static void updateEmbers() {
 }
 
 void effectFire() {
-    // Seed the bottom row
-    for (uint8_t x = 0; x < FIRE_W; x++) {
-        if (random8(FIRE_SEED_HOT_CHANCE) == 0)
-            fireSet(x, FIRE_H - 1, random8(140, FIRE_SEED_HOT + 1));
+    // Write each seed to the bottom row, cool it each frame.
+    // When a seed drops below SEED_MIN_HEAT it is spent — immediately respawn
+    // at a new random x at full heat so there are always exactly NUM_SEEDS seeds.
+    for (uint8_t i = 0; i < NUM_SEEDS; i++) {
+        fireSet(gState.fire.seeds[i].x, FIRE_H - 1, gState.fire.seeds[i].heat);
+        if (gState.fire.seeds[i].heat > SEED_COOL)
+            gState.fire.seeds[i].heat -= SEED_COOL;
         else
-            fireSet(x, FIRE_H - 1, random8(5, 30));
+            gState.fire.seeds[i].heat = 0;
+        if (gState.fire.seeds[i].heat < SEED_MIN_HEAT) {
+            gState.fire.seeds[i].x    = random8(FIRE_W);
+            gState.fire.seeds[i].heat = FIRE_SEED_HOT;
+        }
     }
     // Propagate heat upward with cooling.
     // Runs once every FIRE_RISE_EVERY frames — set to 1 for every frame,

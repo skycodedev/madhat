@@ -33,9 +33,26 @@ static ArduinoFFT<float> FFT(vReal, vImag, FFT_SAMPLES, SAMPLE_RATE);
 #define SMOOTH_UP    0.6f   // rising  — fast attack
 #define SMOOTH_DOWN  0.85f  // falling — slow decay (gives a nice visual trail)
 
-// Auto-gain decay factor — 0.999 gives a very slow peak decay so the gain
-// normalisation tracks the long-term maximum without pumping on transients.
-#define AUTOGAIN_DECAY  0.999f
+// Per-band peak decay — fast (0.95) so it acts only as a ceiling guard for
+// outlier bands. The primary gain control is the global rolling average below.
+#define AUTOGAIN_DECAY  0.95f
+
+// ── Global rolling-average gain ───────────────────────────────────────────────
+// Circular buffer storing the mean magnitude across all EQ_BANDS for each of
+// the last GAIN_HISTORY_FRAMES frames (~15 s at 50 fps).
+// gainSum tracks the running total so the mean is O(1) per frame.
+#define GAIN_HISTORY_FRAMES  750     // ~15 s × 50 fps
+#define GAIN_MIN_REF         0.001f  // floor — prevents div-by-zero in silence
+
+// Saturation-weighted gain push — when bands clip, the current frame is pushed
+// into gainHistory with extra weight so gainRef rises faster and pulls gain down.
+// sqrtf curve means even 1 saturated band out of 60 roughly doubles the weight.
+#define SATURATION_THRESHOLD  0.85f  // band considered saturated above this level
+#define SATURATION_BOOST      8.0f   // max extra multiplier (at 100% saturation → 9×)
+
+static float    gainHistory[GAIN_HISTORY_FRAMES] = {};
+static float    gainSum    = 0.0f;
+static uint16_t gainHead   = 0;
 
 // ── Precomputed band bin boundaries ───────────────────────────────────────────
 // Computed once in audioInit() so no log10f/powf calls in the real-time path.
@@ -105,28 +122,69 @@ bool audioGetBands(float bands[EQ_BANDS]) {
     FFT.compute(FFTDirection::Forward);
     FFT.complexToMagnitude();
 
+    // Compute per-band magnitudes and store them before normalisation so we can
+    // feed the rolling-average gain after the loop.
+    static float mag [EQ_BANDS] = {};
     static float prev[EQ_BANDS] = {};
 
     for (int b = 0; b < EQ_BANDS; b++) {
-        // Average magnitude across all bins in this band.
-        // Using float arithmetic throughout — no integer division truncation.
-        float   sum = 0.0f;
-        int     cnt = 0;
+        float sum = 0.0f;
+        int   cnt = 0;
         for (int bin = bandBinLow[b]; bin <= bandBinHigh[b]; bin++) {
             sum += vReal[bin];
             cnt++;
         }
-        float mag = (cnt > 0) ? (sum / (float)cnt) : 0.0f;
+        mag[b] = (cnt > 0) ? (sum / (float)cnt) : 0.0f;
 
-        // Auto-gain: track a slow-decaying peak and normalise against it.
-        // AUTOGAIN_DECAY (0.999) decays slowly to avoid gain pumping on transients.
-        if (mag > bandPeak[b])
-            bandPeak[b] = mag;
+        // Per-band peak — fast decay (AUTOGAIN_DECAY = 0.95) so it acts only as
+        // a ceiling guard for bands that spike well above the global average.
+        if (mag[b] > bandPeak[b])
+            bandPeak[b] = mag[b];
         else
             bandPeak[b] *= AUTOGAIN_DECAY;
+    }
 
-        float normalised = (bandPeak[b] > 0.0f) ? (mag / bandPeak[b]) : 0.0f;
-        normalised = constrain(normalised, 0.0f, 1.0f);
+    // ── Rolling-average global gain ───────────────────────────────────────────
+    // Compute the mean magnitude across all bands for this frame.
+    float frameMean = 0.0f;
+    for (int b = 0; b < EQ_BANDS; b++) frameMean += mag[b];
+    frameMean /= (float)EQ_BANDS;
+
+    // Compute gainRef from the current buffer state (before this frame's push)
+    // so we can use it for saturation detection without a circular dependency.
+    float gainRef = gainSum / (float)GAIN_HISTORY_FRAMES;
+    if (gainRef < GAIN_MIN_REF) gainRef = GAIN_MIN_REF;
+
+    // Count the fraction of bands that are saturated (normalised > threshold).
+    // Uses the same ceiling formula as the output loop below.
+    float saturatedFraction = 0.0f;
+    for (int b = 0; b < EQ_BANDS; b++) {
+        float ceiling    = (bandPeak[b] > gainRef) ? bandPeak[b] : gainRef;
+        float normalised = constrain(mag[b] / ceiling, 0.0f, 1.0f);
+        if (normalised > SATURATION_THRESHOLD) saturatedFraction += 1.0f;
+    }
+    saturatedFraction /= (float)EQ_BANDS;
+
+    // sqrtf curve: steep at low saturation so even 1/60 bands roughly doubles
+    // the frame weight, flattening toward SATURATION_BOOST at full saturation.
+    float boostedMean = frameMean * (1.0f + sqrtf(saturatedFraction) * SATURATION_BOOST);
+
+    // Push boosted frame into circular buffer, evicting the oldest value.
+    gainSum -= gainHistory[gainHead];
+    gainHistory[gainHead] = boostedMean;
+    gainSum += boostedMean;
+    gainHead = (gainHead + 1) % GAIN_HISTORY_FRAMES;
+
+    // Recompute gainRef with the new frame included for use in the output loop.
+    gainRef = gainSum / (float)GAIN_HISTORY_FRAMES;
+    if (gainRef < GAIN_MIN_REF) gainRef = GAIN_MIN_REF;
+
+    // ── Normalise, smooth, output ─────────────────────────────────────────────
+    for (int b = 0; b < EQ_BANDS; b++) {
+        // Primary normalisation against the 15-second rolling average.
+        // bandPeak acts as a secondary ceiling so no single band can exceed 1.0.
+        float ceiling    = (bandPeak[b] > gainRef) ? bandPeak[b] : gainRef;
+        float normalised = constrain(mag[b] / ceiling, 0.0f, 1.0f);
 
         // Exponential smoothing: fast attack (SMOOTH_UP), slow decay (SMOOTH_DOWN)
         float smooth = (normalised > prev[b]) ? SMOOTH_UP : SMOOTH_DOWN;
