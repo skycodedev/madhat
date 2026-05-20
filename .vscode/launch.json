@@ -39,6 +39,21 @@
             "toolchainBinDir": "/Users/pomona/.platformio/packages/toolchain-xtensa-esp32s3/bin",
             "internalConsoleOptions": "openOnSessionStart",
             "loadMode": "manual"
+        },
+        {
+            // Debug native host tests — no board required.
+            // Build the tests first with "PIO: Run Native Tests", then launch this config.
+            // MIMode: "lldb" for macOS; change to "gdb" on Linux.
+            "name": "Debug Native Tests (host)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/.pio/build/native/program",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "lldb",
+            "preLaunchTask": "PIO: Run Native Tests",
+            "stopAtEntry": false,
+            "internalConsoleOptions": "openOnSessionStart"
         }
     ]
 }

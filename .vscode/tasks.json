@@ -1,0 +1,77 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Default build task — Ctrl+Shift+B
+            "label": "PIO: Build Firmware",
+            "type": "shell",
+            "command": "pio run -e esp32-s3",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "PIO: Upload Firmware",
+            "type": "shell",
+            "command": "pio run -e esp32-s3 -t upload",
+            "group": "build",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "PIO: Serial Monitor",
+            "type": "shell",
+            "command": "pio device monitor --baud 115200",
+            "group": "test",
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            // Default test task — runs all native host tests, no board required
+            "label": "PIO: Run Native Tests",
+            "type": "shell",
+            "command": "pio test -e native -v",
+            "group": { "kind": "test", "isDefault": true },
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            // Run GIF conversion manually (also runs automatically as a pre-build step)
+            "label": "PIO: Convert GIFs",
+            "type": "shell",
+            "command": "python3 scripts/convert_gifs.py",
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            // Compound: full build then flash in one step
+            "label": "PIO: Build & Upload",
+            "dependsOn": ["PIO: Build Firmware", "PIO: Upload Firmware"],
+            "dependsOrder": "sequence",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

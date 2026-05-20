@@ -19,9 +19,9 @@ or drop in a GIF and rebuild.
 **Highlights:**
 
 - Full-circumference seamless display — the strip is one continuous ring
-- Live mic-reactive equalizer with 15-second auto-gain (no manual level setting)
+- Live mic-reactive equalizer — auto-adjusts to room volume, no knob needed
 - Five purely visual effects: fireworks, scrolling text, fire, plasma, and rolling eyes
-- Single button cycles modes instantly (interrupt-driven, debounced)
+- Single button cycles modes; debounced so one press = one mode change
 - GIF animation pipeline — drop a `.gif` in `images/`, rebuild, done
 
 ---
@@ -50,14 +50,14 @@ or drop in a GIF and rebuild.
 
 ### GPIO wiring
 
-| GPIO | Connect to         | Notes                                                  |
-|------|--------------------|--------------------------------------------------------|
-| 6    | LED strip data in  | WS2811, GRB colour order, 480 LEDs                     |
-| 5    | Button to GND      | Interrupt-driven (ISR); fires on button press          |
-| 4    | Pot wiper          | Analog read, ADC1 — safe to use while Wi-Fi is off     |
-| 15   | INMP441 SD         | I2S serial data                                        |
-| 16   | INMP441 WS         | I2S word select (left/right clock)                     |
-| 17   | INMP441 SCK        | I2S bit clock                                          |
+| GPIO | Connect to         | Notes                              |
+|------|--------------------|------------------------------------|
+| 6    | LED strip data in  | WS2811, GRB colour order, 480 LEDs |
+| 5    | Button to GND      | Fires on button press              |
+| 4    | Pot wiper          | Analog read, controls brightness   |
+| 15   | INMP441 SD         | I2S serial data                    |
+| 16   | INMP441 WS         | I2S word select (left/right clock) |
+| 17   | INMP441 SCK        | I2S bit clock                      |
 
 ### Physical assembly notes
 
@@ -101,12 +101,12 @@ adjusts brightness continuously in every mode.
 
 | # | Mode        | Description |
 |---|-------------|-------------|
-| 0 | Fireworks   | Up to 5 simultaneous rockets rise and burst in circle, cross, or ring patterns. The whole buffer fades to black each frame, leaving a comet-trail afterglow. |
-| 1 | Scroll Text | Horizontally scrolling rainbow text using the built-in 5x7 bitmap font. The hue sweeps across all 60 columns and cycles continuously. Default text: `"FUCKING HIPPIES!!"` |
-| 2 | Fire        | Cellular-automaton fire simulation. Eight ignition seeds at the base cycle positions randomly; floating embers drift upward above the flames. |
-| 3 | Equalizer   | Real-time 60-band audio spectrum analyzer. The INMP441 microphone feeds a 512-point FFT (with a Hann window to reduce spectral bleed). A 15-second rolling auto-gain window normalizes loudness automatically. |
-| 4 | Plasma      | Two layers of Perlin noise (a smooth randomness function) blend on different time axes, creating organic lava-lamp colour blobs. |
-| 5 | Eyes        | Two independent eyeballs roll across the wrapping display. Each has a white sclera, randomly placed coloured veins, and a directional pupil that slowly shifts hue. |
+| 0 | Fireworks   | Rockets rise and burst in circle, cross, or ring patterns. Old pixels fade each frame, leaving a trailing glow. |
+| 1 | Scroll Text | Rainbow text scrolls across all 60 columns. Default text: `"FUCKING HIPPIES!!"` |
+| 2 | Fire        | Fire simulation with seeds at the base and floating embers rising above the flames. |
+| 3 | Equalizer   | 60-bar audio spectrum that reacts to sound via the onboard mic. Auto-adjusts to room volume — no knob needed. |
+| 4 | Plasma      | Animated colour blobs generated from layered noise — think lava lamp. |
+| 5 | Eyes        | Two eyeballs roll around the display, each with a white sclera, coloured veins, and a directional pupil. |
 
 **Changing the scroll text:** open `src/main.cpp` and find line 86 in `loop()`:
 
@@ -125,26 +125,29 @@ from space through lowercase `z` are supported.
 - Python 3.7+ — required by the GIF pre-build script (usually already present on macOS/Linux)
 - USB cable capable of data transfer (not charge-only)
 
-PlatformIO will automatically fetch the two Arduino libraries (`FastLED` and `arduinoFFT`)
-on the first build. Python `Pillow` is auto-installed by the pre-build script if absent.
+Libraries (`FastLED`, `arduinoFFT`) and Python `Pillow` are fetched automatically on the
+first build.
 
 ---
 
-## Build and flash
+## Build, test and flash
 
 ```bash
-# Build only
+# Build firmware (also runs the GIF pre-build script automatically)
 pio run
 
 # Build and flash to the connected ESP32-S3
 pio run --target upload
 
-# Open the serial monitor (115200 baud) to read debug output
+# Run all host tests — no board required
+pio test -e native -v
+
+# Open the serial monitor at 115200 baud
 pio device monitor
 ```
 
-The pre-build script `scripts/convert_gifs.py` runs automatically before every build.
-It converts any `*.gif` in `images/` into C++ pixel arrays in `src/generated/`.
+The pre-build script `scripts/convert_gifs.py` runs before every build. It converts any
+`*.gif` in `images/` into C++ pixel arrays in `src/generated/`.
 
 ---
 
@@ -159,7 +162,7 @@ All GPIO pin assignments, matrix dimensions, and per-mode frame delays live in
 | `MATRIX_H`           | 8       | LED rows |
 | `DEBOUNCE_MS`        | 200     | Button debounce window in ms — increase if you get double-triggers |
 | `INITIAL_BRIGHTNESS` | 30      | Startup brightness before the pot is first read (~12% of max) |
-| `DEBUG`              | 1       | Set to `0` before a production build to silence all serial output |
+| `DEBUG`              | 1       | Set to `0` to silence all serial output. Read debug logs with `pio device monitor`. |
 | `DELAY_PLASMA_MS`    | 16      | Frame delay for Plasma mode (~60 fps) |
 | `DELAY_EQ_MS`        | 20      | Frame delay for Equalizer mode (~50 fps) |
 | `DELAY_FW_MS`        | 30      | Frame delay for Fireworks mode (~33 fps) |
@@ -171,17 +174,36 @@ Visual tuning constants for each effect (fire shape, EQ smoothing, firework size
 eye speed, plasma scale, etc.) are defined as named constants near the top of
 [`src/effects.cpp`](src/effects.cpp).
 
-### Debug output
+---
 
-When `DEBUG 1` is set in `src/config.h`, the firmware prints startup messages and
-mode-change events to the serial port at 115200 baud. Read them with:
+## Testing
+
+16 host tests run on your PC with no board or hardware required.
 
 ```bash
-pio device monitor
+pio test -e native -v
 ```
 
-Set `DEBUG` to `0` for a production build. All `DEBUG_LOG(...)` calls compile away
-completely — zero runtime cost, zero extra code size.
+In VS Code: `Ctrl+Shift+P` → **Tasks: Run Task** → **PIO: Run Native Tests**.
+
+### What the tests cover
+
+| Suite | What it protects |
+|---|---|
+| `test_matrix` | `translatePixel()` — every pixel maps to a unique, in-bounds LED index |
+| `test_audio_bands` | EQ frequency mapping and auto-gain maths |
+| `test_effects_bounds` | Fireworks clipping, fire array bounds, scroll font guard, brightness formula |
+| `test_config` | Config constants are self-consistent (e.g. `NUM_LEDS == MATRIX_W × MATRIX_H`) — checked at compile time; the build fails if any assertion is violated |
+
+### Things that need hardware or a build to verify
+
+- **Mode switch:** press the button and watch the serial monitor (`pio device monitor`) — each press should print `Mode changed → N` and advance N by 1, wrapping back to 0 after mode 5; rapid presses within 200 ms should count as one (see `DEBOUNCE_MS` in `src/config.h`)
+- **Brightness:** turning the pot should update brightness within one frame in any mode; at minimum position the display should still glow faintly (never fully off)
+- **Equalizer:** tap the mic — the bars should move with the sound
+- **Boot:** the serial monitor should print `Setup complete — entering main loop` within 3 seconds; a crash here usually means a mic wiring problem
+- **GIF pre-build:** after adding a GIF to `images/`, run `pio run` and check the output with `grep "^#define DEMO" src/generated/demo.h` — `DEMO_W` must be `60` and `DEMO_H` must be `8`
+
+See `test/REQUIREMENTS.md` for the full test inventory and gap list.
 
 ---
 
@@ -213,31 +235,7 @@ See any existing effect in `src/effects.cpp` as a starting point.
 3. Include the generated header in `src/main.cpp` and add a new case to the mode
    `switch` (follow the "Adding a new coded effect" steps above)
 
-For a file named `demo.gif` the generated symbols are:
-
-| Symbol        | Type                       | Value        |
-|---------------|----------------------------|--------------|
-| `DEMO_FRAMES` | `#define`                  | frame count  |
-| `DEMO_DELAY`  | `#define`                  | ms per frame |
-| `DEMO_W`      | `#define`                  | 60           |
-| `DEMO_H`      | `#define`                  | 8            |
-| `DEMO_DATA`   | `uint32_t[N][480]` PROGMEM | pixel data   |
-
-Note: generated `.h` and `.cpp` files are excluded from git (see `.gitignore`).
-Regenerate them locally with `pio run`.
-
----
-
-## Dependencies
-
-| Library       | Version  | Role |
-|---------------|----------|------|
-| FastLED       | ^3.10.3  | WS2811 LED driver, colour math, Perlin noise, trig helpers |
-| arduinoFFT    | ^2.0.4   | 512-point FFT for the Equalizer mode |
-| Python Pillow | latest   | Pre-build GIF-to-C++ converter (auto-installed if absent) |
-
-Managed by PlatformIO — `lib_deps` in `platformio.ini` fetches the Arduino libraries
-automatically on the first build.
+Note: generated `.h` and `.cpp` files are excluded from git. Regenerate with `pio run`.
 
 ---
 
@@ -246,15 +244,21 @@ automatically on the first build.
 ```text
 madHat/
 ├── src/
-│   ├── main.cpp          Entry point — setup(), loop(), mode ISR, brightness pot
-│   ├── config.h          All GPIO pins, matrix size, frame delays, debug flag
-│   ├── audio.cpp/.h      I2S mic driver + 60-band auto-gain FFT engine
-│   ├── effects.cpp/.h    All six visual effect implementations, shared state union
+│   ├── main.cpp          Entry point — setup(), loop(), mode button, brightness pot
+│   ├── config.h          GPIO pins, matrix size, frame delays, debug flag
+│   ├── audio.cpp/.h      I2S mic driver + 60-band FFT equalizer
+│   ├── effects.cpp/.h    All six visual effects
 │   ├── matrix.h          translatePixel(x, y) — logical to physical LED index
-│   ├── font5x7.h         91-character 5x7 bitmap font (ASCII space through z)
+│   ├── font5x7.h         5x7 bitmap font (ASCII space through z)
 │   └── generated/        Auto-generated GIF headers — not committed to git
 ├── images/               Source GIF files + instructions for adding GIF modes
 ├── scripts/
 │   └── convert_gifs.py   Pre-build script: scales GIFs to 60x8, writes C++ arrays
-└── platformio.ini        PlatformIO build config — ESP32-S3, -O2, Arduino framework
+├── test/
+│   ├── native_shims.h    Arduino/FastLED stubs for host builds
+│   ├── test_matrix/      translatePixel coordinate mapping (4 tests)
+│   ├── test_audio_bands/ FFT band boundaries + auto-gain (5 tests)
+│   ├── test_effects_bounds/ Pixel clipping, fire bounds, scroll, brightness (6 tests)
+│   └── test_config/      Config constant invariants (compile-time checks)
+└── platformio.ini        Build config — ESP32-S3 firmware + native test environment
 ```
