@@ -19,3 +19,6 @@ void effectEqualizer();
 
 // Mode 4: Fireworks
 void effectFireworks();
+
+// Mode 5: Scanning eyeballs
+void effectEyes();

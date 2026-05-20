@@ -74,6 +74,16 @@ extern CRGB leds[];
 #define FW_LAUNCH_CHANCE       20  // 1-in-N chance per idle slot per frame
 #define FW_FADE_AMOUNT         55  // passed to fadeToBlackBy each frame (0-255)
 
+// ── Eyes constants ─────────────────────────────────────────────────────────────
+#define EYE_RADIUS      3    // sclera radius in pixels; clips naturally at matrix edges
+#define EYE_SPEED_LO    1    // min scroll speed in 1/16-px per frame
+#define EYE_SPEED_HI    6    // max scroll speed in 1/16-px per frame
+#define EYE_SCAN_LO    30    // min frames before the eye reverses scan direction
+#define EYE_SCAN_HI   120    // max frames before the eye reverses scan direction
+#define EYE_HUE_STEP    1    // hue units drifted toward target per frame (~4 min/cycle)
+#define EYE_VEIN_COUNT  4    // number of vein pixels per eye
+#define EYE_ROW         3    // vertical centre row of each eye (0-indexed)
+
 // =============================================================================
 // Structs
 // =============================================================================
@@ -109,7 +119,7 @@ struct FireState {
 // Renamed from FWState (conflict with enum) → FireworksState
 // Enum for firework lifecycle phase renamed from FWState → FireworkPhase
 enum FireworkPhase : uint8_t { FW_IDLE, FW_RISING, FW_EXPLODE };
-enum FWShape       : uint8_t { FW_CIRCLE, FW_CROSS };
+enum FWShape       : uint8_t { FW_CIRCLE, FW_CROSS, FW_RING };
 
 struct Firework {
     FireworkPhase state;
@@ -131,14 +141,41 @@ struct EqState {
     uint8_t peakTtl[EQ_BANDS];  // frames until peak dot starts falling
 };
 
+// Eye: one scanning eyeball that rolls around the wrapping 60-column ring.
+struct Eye {
+    int16_t cx16;                    // centre x in 1/16-px fixed-point (wraps at MATRIX_W<<4)
+    int8_t  speed16;                 // velocity in 1/16-px per frame (sign = direction)
+    uint8_t scanTtl;                 // frames until direction reverses
+    uint8_t pupilHue;                // current pupil hue
+    uint8_t hueTarget;               // target hue the pupil drifts toward
+    int8_t  veinDx[EYE_VEIN_COUNT];  // vein pixel x offset from eye centre
+    int8_t  veinDy[EYE_VEIN_COUNT];  // vein pixel y offset from eye centre
+    uint8_t veinHue[EYE_VEIN_COUNT]; // hue of each vein pixel
+};
+
+struct EyesState {
+    Eye eyes[2];
+};
+
 // Single union for all effect state — only the active mode's member is live.
+// Union member sizes (approximate):
+//   ScrollState    ~   3 bytes
+//   PlasmaState    ~   4 bytes
+//   FireworksState ~ 150 bytes
+//   EyesState      ~  60 bytes
+//   FireState      ~ 484 bytes
+//   EqState        ~ 601 bytes  ← largest, sizes the union
 static union {
     ScrollState    scroll;
     PlasmaState    plasma;
     FireState      fire;
     FireworksState fireworks;
     EqState        eq;
+    EyesState      eyes;
 } gState;
+
+// Forward declaration — defined in the Eyes section below.
+static void eyeSpawnVeins(Eye& e);
 
 void resetEffect(uint8_t mode) {
     memset(&gState, 0, sizeof(gState));
@@ -147,6 +184,18 @@ void resetEffect(uint8_t mode) {
         for (uint8_t i = 0; i < NUM_SEEDS;  i++) {
             gState.fire.seeds[i].x    = random8(FIRE_W);
             gState.fire.seeds[i].heat = FIRE_SEED_HOT;
+        }
+    }
+    if (mode == 5) {
+        for (uint8_t e = 0; e < 2; e++) {
+            Eye& eye      = gState.eyes.eyes[e];
+            // Start the two eyes on opposite sides of the ring
+            eye.cx16      = (int16_t)(e == 0 ? 15 : 45) << 4;
+            eye.speed16   = (int8_t)random8(EYE_SPEED_LO, EYE_SPEED_HI + 1);
+            eye.scanTtl   = random8(EYE_SCAN_LO, EYE_SCAN_HI + 1);
+            eye.pupilHue  = random8();
+            eye.hueTarget = random8();
+            eyeSpawnVeins(eye);
         }
     }
 }
@@ -387,7 +436,8 @@ static void fwLaunch(Firework& fw) {
     fw.y      = MATRIX_H - 1;
     fw.burstY = random8(1, MATRIX_H / 2 + 1);
     fw.hue    = random8();
-    fw.shape  = (random8(2) == 0) ? FW_CIRCLE : FW_CROSS;
+    uint8_t shapeRoll = random8(3);
+    fw.shape  = (shapeRoll == 0) ? FW_CIRCLE : (shapeRoll == 1) ? FW_CROSS : FW_RING;
     fw.radius = 0;
     fw.ttl    = 2;
     for (uint8_t i = 0; i < 3; i++) { fw.trailX[i] = fw.x; fw.trailY[i] = (uint8_t)fw.y; }
@@ -408,15 +458,20 @@ static void fwUpdate(Firework& fw) {
         fw.y--;
         fw.ttl = 2;
         if (fw.y < 0 || fw.y <= (int8_t)fw.burstY) {
-            fw.y     = fw.burstY;
-            fw.state = FW_EXPLODE;
+            fw.y      = fw.burstY;
+            fw.state  = FW_EXPLODE;
             fw.radius = 0;
-            fw.ttl    = 3;
+            fw.ttl    = (fw.shape == FW_RING) ? 6 : 3;
         }
     } else if (fw.state == FW_EXPLODE) {
         fw.radius++;
-        fw.ttl = 4;
-        if (fw.radius > 4) fw.state = FW_IDLE;
+        if (fw.shape == FW_RING) {
+            fw.ttl = 6;
+            if (fw.radius > 6) fw.state = FW_IDLE;
+        } else {
+            fw.ttl = 4;
+            if (fw.radius > 4) fw.state = FW_IDLE;
+        }
     }
 }
 
@@ -453,18 +508,39 @@ static void fwDraw(const Firework& fw) {
             if (r == 0) {
                 fwSetPixel(fw.x, (int8_t)fw.burstY, col);
             } else {
-                // Cardinal points
                 fwDrawSymmetric(fw.x, fw.burstY, r, 0, col);
                 fwDrawSymmetric(fw.x, fw.burstY, 0, r, col);
-                // Diagonal points at ~45° (approximated as d = (r+1)/2)
                 uint8_t d = (r + 1) / 2;
                 fwDrawSymmetric(fw.x, fw.burstY, d, d, col);
             }
-        } else {
-            // Cross: fill full arms along X and Y axes
+        } else if (fw.shape == FW_CROSS) {
             for (uint8_t i = 0; i <= r; i++) {
                 fwDrawSymmetric(fw.x, fw.burstY, i, 0, col);
                 fwDrawSymmetric(fw.x, fw.burstY, 0, i, col);
+            }
+        } else {
+            // FW_RING: midpoint circle algorithm across all radii 0..r
+            for (uint8_t ri = 0; ri <= r; ri++) {
+                uint8_t ringBri = (uint8_t)((uint16_t)bri * (ri + 1) / (r + 1));
+                CRGB    ringCol = CHSV(fw.hue, 255, ringBri);
+                int8_t cx = (int8_t)fw.x;
+                int8_t cy = (int8_t)fw.burstY;
+                int8_t x  = 0;
+                int8_t y  = (int8_t)ri;
+                int8_t d  = 1 - (int8_t)ri;
+                while (x <= y) {
+                    fwSetPixel((uint8_t)((cx + x + MATRIX_W) % MATRIX_W), cy + y, ringCol);
+                    fwSetPixel((uint8_t)((cx - x + MATRIX_W) % MATRIX_W), cy + y, ringCol);
+                    fwSetPixel((uint8_t)((cx + x + MATRIX_W) % MATRIX_W), cy - y, ringCol);
+                    fwSetPixel((uint8_t)((cx - x + MATRIX_W) % MATRIX_W), cy - y, ringCol);
+                    fwSetPixel((uint8_t)((cx + y + MATRIX_W) % MATRIX_W), cy + x, ringCol);
+                    fwSetPixel((uint8_t)((cx - y + MATRIX_W) % MATRIX_W), cy + x, ringCol);
+                    fwSetPixel((uint8_t)((cx + y + MATRIX_W) % MATRIX_W), cy - x, ringCol);
+                    fwSetPixel((uint8_t)((cx - y + MATRIX_W) % MATRIX_W), cy - x, ringCol);
+                    if (d < 0) { d += 2 * x + 3; }
+                    else       { d += 2 * (x - y) + 5; y--; }
+                    x++;
+                }
             }
         }
     }
@@ -482,5 +558,107 @@ void effectFireworks() {
         fwUpdate(gState.fireworks.fw[i]);
         fwDraw(gState.fireworks.fw[i]);
     }
+    FastLED.show();
+}
+
+// =============================================================================
+// Mode 5: Eyeballs
+// =============================================================================
+// Two independent circular eyes roll around the wrapping 60-column ring.
+// Each eye has: white sclera (radius EYE_RADIUS, clips at matrix edges),
+// coloured random veins through the sclera, and a coloured pupil that leads
+// the direction of travel and slowly drifts through hues.
+
+// Pixel writer that wraps X around the ring and clips Y at matrix edges.
+static void eyeSetPixel(int16_t x, int8_t y, CRGB col) {
+    if (y < 0 || y >= (int8_t)MATRIX_H) return;
+    uint8_t wx = (uint8_t)(((int16_t)(x % MATRIX_W) + MATRIX_W) % MATRIX_W);
+    leds[translatePixel(wx, (uint8_t)y)] = col;
+}
+
+// Randomly place EYE_VEIN_COUNT vein pixels within the sclera circle,
+// excluding the eye centre (reserved for the pupil).
+static void eyeSpawnVeins(Eye& e) {
+    for (uint8_t i = 0; i < EYE_VEIN_COUNT; i++) {
+        int8_t dx, dy;
+        uint8_t tries = 0;
+        do {
+            dx = (int8_t)(random8(EYE_RADIUS * 2 + 1)) - EYE_RADIUS;
+            dy = (int8_t)(random8(EYE_RADIUS * 2 + 1)) - EYE_RADIUS;
+            tries++;
+        } while ((dx * dx + dy * dy > EYE_RADIUS * EYE_RADIUS
+                  || (dx == 0 && dy == 0))
+                 && tries < 20);
+        e.veinDx[i]  = dx;
+        e.veinDy[i]  = dy;
+        e.veinHue[i] = random8();
+    }
+}
+
+// Draw one eye onto the LED buffer. Layering: sclera → veins → pupil.
+static void drawEye(const Eye& e) {
+    int16_t cx = e.cx16 >> 4;
+
+    // 1. Sclera — white, all pixels within EYE_RADIUS of centre
+    for (int8_t dx = -EYE_RADIUS; dx <= EYE_RADIUS; dx++) {
+        for (int8_t dy = -EYE_RADIUS; dy <= EYE_RADIUS; dy++) {
+            if (dx * dx + dy * dy <= EYE_RADIUS * EYE_RADIUS)
+                eyeSetPixel(cx + dx, (int8_t)EYE_ROW + dy, CRGB::White);
+        }
+    }
+
+    // 2. Veins — coloured branching pixels through the sclera
+    for (uint8_t i = 0; i < EYE_VEIN_COUNT; i++)
+        eyeSetPixel(cx + e.veinDx[i], (int8_t)EYE_ROW + e.veinDy[i],
+                    CHSV(e.veinHue[i], 220, 180));
+
+    // 3. Pupil — leads the direction of travel; 2-px: bright dot + dimmer core
+    int8_t dir   = (e.speed16 >= 0) ? 1 : -1;
+    // Outer pupil pixel (leading edge — brightest)
+    eyeSetPixel(cx + dir, (int8_t)EYE_ROW,
+                CHSV(e.pupilHue, 255, 255));
+    // Inner pupil pixel (centre — slightly dimmer for depth)
+    eyeSetPixel(cx,        (int8_t)EYE_ROW,
+                CHSV(e.pupilHue, 255, 180));
+}
+
+void effectEyes() {
+    FastLED.clear();
+
+    for (uint8_t e = 0; e < 2; e++) {
+        Eye& eye = gState.eyes.eyes[e];
+
+        // ── Advance position ──────────────────────────────────────────────────
+        eye.cx16 += eye.speed16;
+        // Wrap at ring boundary (MATRIX_W columns × 16 sub-pixels)
+        int16_t ring16 = (int16_t)MATRIX_W << 4;
+        if (eye.cx16 < 0)      eye.cx16 += ring16;
+        if (eye.cx16 >= ring16) eye.cx16 -= ring16;
+
+        // ── Scan direction reversal ───────────────────────────────────────────
+        if (eye.scanTtl > 0) {
+            eye.scanTtl--;
+        } else {
+            eye.speed16  = -eye.speed16;
+            // Pick a new random speed magnitude to vary the glance rhythm
+            int8_t newMag = (int8_t)random8(EYE_SPEED_LO, EYE_SPEED_HI + 1);
+            eye.speed16   = (eye.speed16 >= 0) ? newMag : -newMag;
+            eye.scanTtl   = random8(EYE_SCAN_LO, EYE_SCAN_HI + 1);
+        }
+
+        // ── Pupil hue drift ───────────────────────────────────────────────────
+        // Move pupilHue one step toward hueTarget; pick a new target when close.
+        if (eye.pupilHue != eye.hueTarget) {
+            // Step in the shorter direction around the hue wheel
+            int8_t diff = (int8_t)(eye.hueTarget - eye.pupilHue);
+            eye.pupilHue += (diff > 0) ? EYE_HUE_STEP : -EYE_HUE_STEP;
+        } else {
+            eye.hueTarget = random8();
+        }
+
+        // ── Draw ─────────────────────────────────────────────────────────────
+        drawEye(eye);
+    }
+
     FastLED.show();
 }

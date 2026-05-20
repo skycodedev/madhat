@@ -8,18 +8,18 @@ corresponding C++ header in src/generated/ for each one.
 Each GIF frame is scaled/cropped to fit the LED matrix (MATRIX_W x MATRIX_H)
 and stored as a flat array of CRGB-compatible uint32_t values (0x00RRGGBB).
 
-Generated header example  (src/generated/demo_gif.h):
-------------------------------------------------------
+Generated header example  (src/generated/demo.h):
+--------------------------------------------------
     #pragma once
     #include <Arduino.h>
 
     // demo.gif  —  60×8, 12 frames, 100 ms/frame
-    #define DEMO_GIF_W       60
-    #define DEMO_GIF_H        8
-    #define DEMO_GIF_FRAMES  12
-    #define DEMO_GIF_DELAY  100   // ms
+    #define DEMO_W       60
+    #define DEMO_H        8
+    #define DEMO_FRAMES  12
+    #define DEMO_DELAY  100   // ms per frame
 
-    extern const uint32_t DEMO_GIF_DATA[12][480] PROGMEM;
+    extern const uint32_t DEMO_DATA[12][480] PROGMEM;
 
 And a matching .cpp in src/generated/ with the actual data.
 """

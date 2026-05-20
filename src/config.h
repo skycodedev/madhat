@@ -25,8 +25,8 @@
 #define POT_MAX_BRIGHT  255 // maximum brightness
 
 // ── Mode selector ─────────────────────────────────────────────────────────────
-// Modes: 0=scroll text  1=plasma  2=fire  3=equalizer  4=fireworks
-#define NUM_MODES   5
+// Modes: 0=fireworks  1=scroll text  2=fire  3=equalizer  4=plasma  5=eyes
+#define NUM_MODES   6
 #define DEBOUNCE_MS 200     // ISR software debounce window (ms)
 
 // ── Per-mode frame delays (ms) ────────────────────────────────────────────────
@@ -36,6 +36,7 @@
 #define DELAY_FIRE_MS     0   // 0 = run at max ESP32-S3 throughput (no artificial cap)
 #define DELAY_EQ_MS      20   // ~50 fps
 #define DELAY_FW_MS      30   // ~33 fps
+#define DELAY_EYES_MS    40   // ~25 fps
 
 // ── Initial brightness ────────────────────────────────────────────────────────
 // Applied at startup before the potentiometer is first read.

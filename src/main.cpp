@@ -82,10 +82,11 @@ void loop() {
     }
 
     switch (currentMode) {
-        case 0: effectScrollText("HELLO"); delay(DELAY_SCROLL_MS); break;
-        case 1: effectPlasma();            delay(DELAY_PLASMA_MS); break;
+        case 0: effectFireworks();         delay(DELAY_FW_MS);     break;
+        case 1: effectScrollText("FUCKING HIPPIES!!"); delay(DELAY_SCROLL_MS); break;
         case 2: effectFire();              delay(DELAY_FIRE_MS);   break;
         case 3: effectEqualizer();         delay(DELAY_EQ_MS);     break;
-        case 4: effectFireworks();         delay(DELAY_FW_MS);     break;
+        case 4: effectPlasma();            delay(DELAY_PLASMA_MS); break;
+        case 5: effectEyes();              delay(DELAY_EYES_MS);   break;
     }
 }
